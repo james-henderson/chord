@@ -56,13 +56,7 @@
   "Creates websockets connection and returns a 2-sided channel when the websocket is opened.
    Arguments:
     ws-url           - (required) link to websocket service
-    :reading-buffer  - (optional) hash-map with settings for reading channel
-    :writing-buffer  - (optional) hash-map with settings for writing channel
-
-    supported keys for channel's options:
-
-    * type - type of channel's buffer [:fixed :sliding :dropping :unbuffered] (default :unbuffered)
-    * size - size of buffer (required for [:fixed :sliding :dropping])
+    options-map      - (optional) hash-map to specify implicit :read-ch & :write-ch channels
 
    Usage:
     (:require [cljs.core.async :as a])
@@ -74,9 +68,9 @@
 
     (a/<! (ws-ch \"ws://127.0.0.1:6437\" {:read-ch (a/chan (a/sliding-buffer 10))
                                           :write-ch (a/chan (a/dropping-buffer 10))}))"
-  
+
   [ws-url & [{:keys [read-ch write-ch]}]]
-  
+
   (let [web-socket (js/WebSocket. ws-url)
         read-ch (doto (or read-ch (chan))
                   (read-from-ch! web-socket))
