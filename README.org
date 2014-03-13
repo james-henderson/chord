@@ -8,7 +8,7 @@ between the triad of CLJ/CLJS, web-sockets and core.async.
 Include the following in your =project.clj=:
 
 #+BEGIN_SRC clojure
-  [jarohen/chord "0.3.0"]
+  [jarohen/chord "0.3.1-rc1"]
 #+END_SRC
 
 *** Example project
@@ -60,7 +60,7 @@ Errors in the web-socket channel are returned as a map with an
 #+END_SRC
 
 As of 0.3.0, you can pass a =:format= option, to pass messages over
-the channel as EDN (default), or as raw strings:
+the channel as EDN (default), as raw strings, or JSON (0.3.1):
 
 #+BEGIN_SRC clojure
   (:require [cljs.core.async :as a])
