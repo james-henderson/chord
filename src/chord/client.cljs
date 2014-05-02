@@ -3,7 +3,7 @@
             [cljs.core.async.impl.protocols :as p]
             [cljs.reader :as edn]
             [clojure.walk :refer [keywordize-keys]])
-  (:require-macros [cljs.core.async.macros :refer [go-loop]]))
+  (:require-macros [cljs.core.async.macros :refer [go go-loop]]))
 
 (defn- read-from-ch! [ch ws]
   (set! (.-onmessage ws)
@@ -18,27 +18,7 @@
         (.send ws msg)
         (recur)))))
 
-(defn- make-open-ch [ws v]
-  (let [ch (chan)]
-    (set! (.-onopen ws)
-          #(do
-             (put! ch v)
-             (close! ch)))
-    ch))
-
-(defn- on-error [ws read-ch]
-  (set! (.-onerror ws)
-        (fn [ev]
-          (let [error (.-data ev)]
-            (put! read-ch {:error error})))))
-
-(defn- on-close [ws read-ch write-ch]
-  (set! (.-onclose ws)
-        (fn []
-          (close! read-ch)
-          (close! write-ch))))
-
-(defn- combine-chs [ws read-ch write-ch]
+(defn- combine-chs [read-ch write-ch & [close-fn]]
   (reify
     p/ReadPort
     (take! [_ handler]
@@ -52,28 +32,67 @@
     (close! [_]
       (p/close! read-ch)
       (p/close! write-ch)
-      (.close ws))))
+      (when close-fn
+        (close-fn)))))
+
+(defn- on-error [ws]
+  (set! (.-onerror ws)
+        (fn [ev]
+          (set! (.-error-seen ws) (or (.-data ev) true)))))
+
+(defn- on-close [ws read-ch write-ch & [err-meta-channel]]
+  (set! (.-onclose ws)
+        (fn [ev]
+          (go ;; using a go block to defer close until put completes
+            (let [error-seen? (.-error-seen ws)]
+              (when (or error-seen?
+                        (not (.-wasClean ev)))
+                (let [error-desc {:error (.-reason ev)
+                                  :code (.-code ev)
+                                  :wasClean (.-wasClean ev)}]
+                  (when err-meta-channel
+                    (>! err-meta-channel
+                        (combine-chs
+                         (go error-desc)
+                         (doto (chan) (close!)))))
+                  (>! read-ch error-desc)))
+              (close! read-ch)
+              (close! write-ch))))))
+
+(defn- make-open-ch [ws read-ch write-ch v]
+  (let [ch (chan)]
+    (on-error ws)
+    (on-close ws read-ch write-ch ch)
+    (set! (.-onopen ws)
+          #(go ;; using a go block to defer close until put completes
+             (>! ch v)
+             (close! ch)))
+    ch))
 
 (defmulti wrap-format
   (fn [chs format] format))
 
-(defn try-read-edn [{:keys [message]}]
-  (try
-    {:message (edn/read-string message)}
-    (catch js/Error e
-      {:error :invalid-edn
-       :invalid-msg message})))
+(defn try-read-edn [{:keys [error message] :as data}]
+  (if error
+    data
+    (try
+      {:message (edn/read-string message)}
+      (catch js/Error e
+        {:error :invalid-edn
+         :invalid-msg message}))))
 
 (defmethod wrap-format :edn [{:keys [read-ch write-ch]} _]
   {:read-ch (a/map< try-read-edn read-ch)
    :write-ch (a/map> pr-str write-ch)})
 
-(defn try-read-json [{:keys [message]}]
-  (try
-    {:message (-> message js/JSON.parse js->clj)}
-    (catch js/Error e
-      {:error :invalid-json
-       :invalid-msg message})))
+(defn try-read-json [{:keys [error message] :as data}]
+  (if error
+    data
+    (try
+      {:message (-> message js/JSON.parse js->clj)}
+      (catch js/Error e
+        {:error :invalid-json
+         :invalid-msg message}))))
 
 (defmethod wrap-format :json [{:keys [read-ch write-ch]} _]
   {:read-ch (a/map< try-read-json read-ch)
@@ -118,11 +137,7 @@
         {:keys [read-ch write-ch]} (-> {:read-ch (or read-ch (chan))
                                         :write-ch (or write-ch (chan))}
                                        (wrap-format format))]
-
     (read-from-ch! read-ch web-socket)
     (write-to-ch! write-ch web-socket)
-    (on-error web-socket read-ch)
-    (on-close web-socket read-ch write-ch)
-    
-    (->> (combine-chs web-socket read-ch write-ch)
-         (make-open-ch web-socket))))
+    (->> (combine-chs read-ch write-ch #(.close web-socket))
+         (make-open-ch web-socket read-ch write-ch))))
