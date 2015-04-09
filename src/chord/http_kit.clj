@@ -4,34 +4,37 @@
             [chord.channels :refer [read-from-ws! write-to-ws! bidi-ch]]
             [chord.format :as cf]))
 
-(defn- on-close [ws read-ch write-ch]
+(defn- on-close [ws read-ch write-ch on-client-close]
   (http/on-close ws
                  (fn [_]
                    ;; TODO support status?
                    (close! read-ch)
-                   (close! write-ch))))
+                   (close! write-ch)
+                   (when-not (nil? on-client-close)
+                     (on-client-close)))))
 
-(defn core-async-ch [httpkit-ch {:keys [read-ch write-ch format] :as opts}]
+(defn core-async-ch [httpkit-ch {:keys [read-ch write-ch format on-client-close] :as opts}]
   (let [{:keys [read-ch write-ch]} (-> {:read-ch (or read-ch (chan))
                                         :write-ch (or write-ch (chan))}
                                        (cf/wrap-format (dissoc opts :read-ch :write-ch)))]
 
     (read-from-ws! httpkit-ch read-ch)
     (write-to-ws! httpkit-ch write-ch)
-    (on-close httpkit-ch read-ch write-ch)
-    
+    (on-close httpkit-ch read-ch write-ch on-client-close)
+
     (bidi-ch read-ch write-ch {:on-close #(http/close httpkit-ch)})))
 
 (defmacro with-channel
   "Extracts the websocket from the request and binds it to 'ch-name' in the body
    Arguments:
-    req         - (required) HTTP-kit request map
-    ch-name     - (required) variable to bind the channel to in the body
-    opts        - (optional) map to configure reading/writing channels
-      :read-ch  - (optional) (possibly buffered) channel to use for reading the websocket
-      :write-ch - (optional) (possibly buffered) channel to use for writing to the websocket
-      :format   - (optional) data format to use on the channel, (at the moment)
-                             either :edn (default), :json, :json-kw, :transit-json, or :str.
+    req                - (required) HTTP-kit request map
+    ch-name            - (required) variable to bind the channel to in the body
+    opts               - (optional) map to configure reading/writing channels
+      :read-ch         - (optional) (possibly buffered) channel to use for reading the websocket
+      :write-ch        - (optional) (possibly buffered) channel to use for writing to the websocket
+      :on-client-close - (optional) function that will be invoked if the client-side close the websocket connection
+      :format          - (optional) data format to use on the channel, (at the moment)
+                                    either :edn (default), :json, :json-kw, :transit-json, or :str.
          (and any other options your formatter needs)
 
    Usage:
@@ -51,16 +54,16 @@
         (when-let [msg (<! the-ws)]
           (println msg)
           (recur))))"
-  
+
   [req ch-name & [opts & body]]
-  
+
   (let [opts? (and (or (map? opts)
                        (:opts (meta opts)))
                    (seq body))
         body (cond->> body
                (not opts?) (cons opts))
         opts (when opts? opts)]
-    
+
     `(http/with-channel ~req httpkit-ch#
        (let [~ch-name (core-async-ch httpkit-ch# ~opts)]
          ~@body))))
@@ -73,7 +76,7 @@
     handler - (required) Ring-compatible handler
     opts    - (optional) Options for the WebSocket channel - same options as for `with-channel`"
   [handler & [opts]]
-  
+
   (fn [req]
     (if (:websocket? req)
       (with-channel req ws-conn
